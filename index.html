@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Loop2Go — Per-channel Loop Length / Polyrhythms</title>
+<style>
+  :root{
+    --bg:#0b1220; --neon:#20e0ff; --neon2:#9be7ff; --ok:#2be675; --warn:#ffd33d; --blend:#ff9a2b; --muted:#ff3b57;
+    --step-off:#2a3d66; --step-on:#1b5e20; --text:#dff7ff; --glow:#ff3b8d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:16px;background:radial-gradient(1200px 600px at 30% -10%, #0b274b 0%, #0b1220 42%, #070c17 100%);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  h1{margin:0 0 8px;font-size:18px;color:var(--neon2);text-align:center}
+  .sub{ text-align:center;font-size:12px;opacity:0.75;margin-bottom:12px }
+  .transport{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  .btn{border:1px solid rgba(32,224,255,0.25);background:transparent;color:var(--neon);padding:8px 12px;border-radius:10px;cursor:pointer;box-shadow:0 0 12px rgba(32,224,255,0.12) inset,0 0 8px rgba(32,224,255,0.08)}
+  .btn:active{transform:translateY(1px)}
+  .bpm{display:flex;align-items:center;gap:6px}
+  input[type=number]{width:76px;text-align:center;border:1px solid rgba(32,224,255,0.2);background:transparent;color:var(--text);padding:6px 8px;border-radius:8px}
+  .mixer{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px}
+  .strip{flex:0 0 320px;scroll-snap-align:start;background:linear-gradient(180deg,rgba(15,26,49,0.85),rgba(9,16,33,0.85));border:1px solid rgba(32,224,255,0.09);border-radius:14px;padding:12px;box-shadow:0 10px 30px rgba(0,0,0,0.25),inset 0 0 40px rgba(32,224,255,0.05)}
+  .strip h2{margin:0 0 8px;font-size:14px;color:var(--neon2);text-align:center}
+  select{width:100%;background:transparent;color:var(--neon);border:1px solid rgba(32,224,255,0.18);border-radius:10px;padding:8px;margin-bottom:10px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+  .knob-wrap{width:110px;text-align:center}
+  canvas.knob{width:100px;height:100px;display:block;margin:0 auto 4px;border-radius:50%;box-shadow:0 0 12px rgba(32,224,255,0.18);touch-action:none;cursor:pointer}
+  .readout{font-size:12px;color:var(--ok)}
+  .mute{min-width:72px;border:1px solid rgba(255,59,87,0.35);color:#fff;background:rgba(255,59,87,0.08);padding:10px 12px;border-radius:10px;cursor:pointer}
+  .mute.muted{background:var(--muted);border-color:var(--muted);box-shadow:0 0 16px rgba(255,59,87,0.45)}
+  .grid{display:grid;grid-template-columns:repeat(8,32px);grid-auto-rows:32px;gap:6px;justify-content:center; margin-top:8px}
+  .cell{width:32px;height:32px;border-radius:6px;background:var(--step-off);border:1px solid rgba(32,224,255,0.08);box-shadow:inset 0 -8px 18px rgba(0,0,0,0.35);cursor:pointer;transition:background 60ms linear,opacity 120ms linear, box-shadow 200ms ease}
+  .cell.active{background:var(--step-on)}
+  .cell.playhead{background:var(--warn)}
+  .cell.active.playhead{background:var(--blend)}
+  .cell.beyond{opacity:0.35; filter:grayscale(40%)}
+  .cell.glow{box-shadow:0 0 18px 6px var(--glow), inset 0 0 12px var(--glow) !important;}
+  .loop-controls{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:8px}
+  .loop-controls .btn { padding:6px 10px; font-size:13px; }
+  .loop-label{min-width:88px;text-align:center;color:var(--neon2);border:1px solid rgba(32,224,255,0.08);padding:6px;border-radius:8px}
+  .hint{text-align:center;font-size:12px;opacity:0.75;margin-top:10px}
+  @media (max-width:720px){ .strip{flex:0 0 86vw} }
+</style>
+</head>
+<body>
+  <h1>Loop2Go — Per-channel Loop Length (Polyrhythms)</h1>
+  <div class="sub">Each channel has its own loop length. Steps beyond the channel's length are greyed out and won’t trigger. Playhead = global; glowing cells = when sound is triggered.</div>
+
+  <div class="transport">
+    <button id="playBtn" class="btn">Play</button>
+    <button id="stopBtn" class="btn">Stop</button>
+
+    <div style="width:8px"></div>
+
+    <div class="bpm">
+      <button id="bpmDown" class="btn">−</button>
+      <input id="bpmInput" type="number" min="40" max="240" value="120" />
+      <button id="bpmUp" class="btn">+</button>
+    </div>
+  </div>
+
+  <div class="mixer" id="mixer"></div>
+
+  <div class="hint">Tip: Set different loop lengths per channel to create polyrhythms.</div>
+
+<script>
+/* ================= AUDIO SETUP ================= */
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+const audioCtx = new AudioCtx();
+const master = audioCtx.createGain(); master.gain.value = 1; master.connect(audioCtx.destination);
+function dbToGain(db){ return Math.pow(10, db/20); }
+
+/* ================= MODEL ================= */
+const CHANNEL_DEFS = [
+  {id:'kick',title:'Kick',defaultSample:'kick'},
+  {id:'bass',title:'Bass',defaultSample:'strings'},
+  {id:'snare',title:'Snare',defaultSample:'snare'},
+  {id:'chords',title:'Chords',defaultSample:'violin'}
+];
+const SAMPLE_OPTIONS = [
+  {value:'kick',label:'Kick (Low Sine)'},
+  {value:'snare',label:'Snare (Noise)'},
+  {value:'hihat',label:'Hi-Hat (High Noise)'},
+  {value:'strings',label:'Strings (Sawtooth)'},
+  {value:'violin',label:'Violin (Square)'}
+];
+const channels = []; // per-channel state objects
+
+/* ================= DUMMY AUDIO ================= */
+function playDummySample(type, time, dest){
+  const dur = 0.25;
+  if(type === 'kick'){
+    const o = audioCtx.createOscillator(); o.type='sine';
+    o.frequency.setValueAtTime(120, time); o.frequency.exponentialRampToValueAtTime(50, time+dur);
+    const g = audioCtx.createGain(); g.gain.setValueAtTime(1, time); g.gain.exponentialRampToValueAtTime(0.001, time+dur);
+    o.connect(g).connect(dest); o.start(time); o.stop(time+dur); return;
+  }
+  if(type === 'snare' || type === 'hihat'){
+    const buf = audioCtx.createBuffer(1, Math.max(1, audioCtx.sampleRate * dur), audioCtx.sampleRate);
+    const d = buf.getChannelData(0); for(let i=0;i<d.length;i++) d[i] = (Math.random()*2 - 1)*(1 - i/d.length);
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
+    const g = audioCtx.createGain(); g.gain.setValueAtTime(0.9, time); g.gain.exponentialRampToValueAtTime(0.001, time+dur);
+    if(type === 'hihat'){ const hp = audioCtx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=7000; src.connect(hp).connect(g).connect(dest); }
+    else src.connect(g).connect(dest);
+    src.start(time); src.stop(time+dur); return;
+  }
+  if(type === 'strings'){
+    const o = audioCtx.createOscillator(); o.type='sawtooth'; o.frequency.setValueAtTime(110, time);
+    const g = audioCtx.createGain(); g.gain.setValueAtTime(0.5, time); g.gain.exponentialRampToValueAtTime(0.001, time+dur);
+    o.connect(g).connect(dest); o.start(time); o.stop(time+dur); return;
+  }
+  if(type === 'violin'){
+    const o = audioCtx.createOscillator(); o.type='square'; o.frequency.setValueAtTime(220, time);
+    const g = audioCtx.createGain(); g.gain.setValueAtTime(0.35, time); g.gain.exponentialRampToValueAtTime(0.001, time+dur);
+    o.connect(g).connect(dest); o.start(time); o.stop(time+dur); return;
+  }
+}
+
+/* ================= KNOB UI ================= */
+function createKnob(canvas, readoutEl, opts){
+  const ctx = canvas.getContext('2d');
+  const { min, max, initial, map, format, onChange } = opts;
+  let value = initial;
+  const minA = -135 * Math.PI/180, maxA = 135 * Math.PI/180;
+  let angle = 0;
+  let dragging = false, lastY = 0;
+
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    const cx = canvas.width/2, cy = canvas.height/2, r = Math.min(cx,cy)-10;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fillStyle='#071a36'; ctx.fill();
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(32,224,255,0.9)'; ctx.shadowBlur=12; ctx.shadowColor='rgba(32,224,255,0.25)'; ctx.stroke(); ctx.shadowBlur=0;
+    const mx = cx + (r-10)*Math.cos(angle - Math.PI/2);
+    const my = cy + (r-10)*Math.sin(angle - Math.PI/2);
+    ctx.beginPath(); ctx.arc(mx,my,6,0,Math.PI*2); ctx.fillStyle='rgba(32,224,255,0.98)'; ctx.fill();
+  }
+
+  function setFromValue(v){
+    value = Math.max(min, Math.min(max, v));
+    const norm = (value - min) / (max - min);
+    angle = minA + norm * (maxA - minA);
+    const mapped = map(value);
+    onChange(mapped);
+    readoutEl.textContent = format(value);
+    draw();
+  }
+
+  function pointerDown(y){ dragging=true; lastY=y; }
+  function pointerMove(y){
+    if(!dragging) return;
+    const dy = y - lastY;
+    const sensitivity = (max - min) / 220;
+    setFromValue(value - dy * sensitivity);
+    lastY = y;
+  }
+  function pointerUp(){ dragging=false; }
+
+  canvas.addEventListener('mousedown', (e)=>{ pointerDown(e.clientY); e.preventDefault(); });
+  window.addEventListener('mousemove', (e)=> pointerMove(e.clientY));
+  window.addEventListener('mouseup', ()=> pointerUp());
+
+  canvas.addEventListener('touchstart', (e)=>{ pointerDown(e.touches[0].clientY); e.preventDefault(); }, {passive:false});
+  window.addEventListener('touchmove', (e)=>{ if(e.touches && e.touches[0]) pointerMove(e.touches[0].clientY); }, {passive:false});
+  window.addEventListener('touchend', ()=> pointerUp());
+
+  canvas.addEventListener('dblclick', ()=> setFromValue(initial));
+  setFromValue(initial);
+}
+
+/* ================= UI & Channel Factory ================= */
+const mixerEl = document.getElementById('mixer');
+
+function createStrip(def){
+  const el = document.createElement('div'); el.className='strip';
+  const title = document.createElement('h2'); title.textContent = def.title; el.appendChild(title);
+
+  // selector
+  const sel = document.createElement('select');
+  SAMPLE_OPTIONS.forEach(opt=>{ const o = document.createElement('option'); o.value=opt.value; o.textContent=opt.label; sel.appendChild(o); });
+  sel.value = def.defaultSample; el.appendChild(sel);
+
+  // nodes
+  const gainNode = audioCtx.createGain(); gainNode.gain.value = 1;
+  const filter = audioCtx.createBiquadFilter(); filter.type='lowpass'; filter.frequency.value = 20000;
+  gainNode.connect(filter).connect(master);
+
+  // state
+  const state = {
+    id:def.id, title:def.title, selectedSample:def.defaultSample,
+    gainNode, filter, steps: new Array(64).fill(false),
+    els:[], muted:false, lastGain:1, loopLen:64
+  };
+
+  sel.addEventListener('change', e => state.selectedSample = e.target.value);
+
+  // controls row
+  const row = document.createElement('div'); row.className='row';
+  const volWrap = document.createElement('div'); volWrap.className='knob-wrap';
+  const volKnob = document.createElement('canvas'); volKnob.className='knob'; volKnob.width=100; volKnob.height=100;
+  const volRead = document.createElement('div'); volRead.className='readout';
+  volWrap.appendChild(volKnob); volWrap.appendChild(volRead);
+
+  const filWrap = document.createElement('div'); filWrap.className='knob-wrap';
+  const filKnob = document.createElement('canvas'); filKnob.className='knob'; filKnob.width=100; filKnob.height=100;
+  const filRead = document.createElement('div'); filRead.className='readout';
+  filWrap.appendChild(filKnob); filWrap.appendChild(filRead);
+
+  const muteBtn = document.createElement('button'); muteBtn.className='mute'; muteBtn.textContent='Mute';
+
+  row.appendChild(volWrap); row.appendChild(filWrap); row.appendChild(muteBtn);
+  el.appendChild(row);
+
+  // loop length controls
+  const loopRow = document.createElement('div'); loopRow.className='loop-controls';
+  const lenDown = document.createElement('button'); lenDown.className='btn'; lenDown.textContent='−';
+  const lenLabel = document.createElement('div'); lenLabel.className='loop-label'; lenLabel.textContent = 'Loop length: 64';
+  const lenUp = document.createElement('button'); lenUp.className='btn'; lenUp.textContent='+';
+  loopRow.appendChild(lenDown); loopRow.appendChild(lenLabel); loopRow.appendChild(lenUp);
+  el.appendChild(loopRow);
+
+  // grid
+  const grid = document.createElement('div'); grid.className='grid';
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      const idx = r*8 + c;
+      const cell = document.createElement('div'); cell.className='cell';
+      cell.dataset.idx = idx;
+      cell.addEventListener('click', ()=>{
+        state.steps[idx] = !state.steps[idx];
+        cell.classList.toggle('active', state.steps[idx]);
+      });
+      grid.appendChild(cell); state.els.push(cell);
+    }
+  }
+  el.appendChild(grid);
+  mixerEl.appendChild(el);
+
+  // knob hookup
+  createKnob(volKnob, volRead, {
+    min:-24, max:12, initial:0,
+    map: v => dbToGain(v),
+    format: v => v.toFixed(1) + ' dB',
+    onChange: g => { state.lastGain = g; if(!state.muted) state.gainNode.gain.setValueAtTime(g, audioCtx.currentTime); }
+  });
+
+  createKnob(filKnob, filRead, {
+    min:200, max:20000, initial:20000,
+    map: v => v,
+    format: v => (v>=1000? (v/1000).toFixed(1)+' kHz' : Math.round(v)+' Hz'),
+    onChange: hz => state.filter.frequency.setValueAtTime(hz, audioCtx.currentTime)
+  });
+
+  // mute
+  muteBtn.addEventListener('click', ()=>{
+    state.muted = !state.muted;
+    if(state.muted){
+      state.gainNode.gain.cancelScheduledValues(audioCtx.currentTime);
+      state.gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+      muteBtn.classList.add('muted'); muteBtn.textContent='Muted';
+    } else {
+      state.gain
