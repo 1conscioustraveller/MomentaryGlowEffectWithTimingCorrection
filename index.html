@@ -258,4 +258,84 @@ function createStrip(def){
       state.gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
       muteBtn.classList.add('muted'); muteBtn.textContent='Muted';
     } else {
-      state.gain
+      state.gainNode.gain.setValueAtTime(state.lastGain, audioCtx.currentTime);
+      muteBtn.classList.remove('muted'); muteBtn.textContent='Mute';
+    }
+  });
+
+  // loop length adjust
+  lenDown.addEventListener('click', ()=>{
+    state.loopLen = Math.max(1, state.loopLen - 1);
+    lenLabel.textContent = 'Loop length: ' + state.loopLen;
+    updateGreyOut(state);
+  });
+  lenUp.addEventListener('click', ()=>{
+    state.loopLen = Math.min(64, state.loopLen + 1);
+    lenLabel.textContent = 'Loop length: ' + state.loopLen;
+    updateGreyOut(state);
+  });
+
+  updateGreyOut(state);
+
+  channels.push(state);
+}
+
+function updateGreyOut(state){
+  state.els.forEach((cell, idx)=>{
+    if(idx >= state.loopLen) cell.classList.add('beyond');
+    else cell.classList.remove('beyond');
+  });
+}
+
+/* ================= SCHEDULER ================= */
+let bpm = 120;
+let playing = false;
+let step = 0;
+let nextNoteTime = 0;
+
+function scheduler(){
+  while(nextNoteTime < audioCtx.currentTime + 0.1){
+    channels.forEach(ch=>{
+      const stepInLoop = step % ch.loopLen;
+      if(ch.steps[stepInLoop]){
+        playDummySample(ch.selectedSample, nextNoteTime, ch.gainNode);
+        const el = ch.els[stepInLoop];
+        el.classList.add('glow');
+        setTimeout(()=>el.classList.remove('glow'), 120);
+      }
+    });
+    // visual playhead
+    channels.forEach(ch=>{
+      ch.els.forEach((el, idx)=>{
+        if(idx === (step % 64)) el.classList.add('playhead');
+        else el.classList.remove('playhead');
+      });
+    });
+    // quarter-note step duration
+    const stepDur = 60 / bpm;
+    nextNoteTime += stepDur;
+    step++;
+  }
+  if(playing) requestAnimationFrame(scheduler);
+}
+
+/* ================= TRANSPORT ================= */
+document.getElementById('playBtn').addEventListener('click', ()=>{
+  if(!playing){
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    playing = true; step=0; nextNoteTime=audioCtx.currentTime+0.05;
+    scheduler();
+  }
+});
+document.getElementById('stopBtn').addEventListener('click', ()=>{ playing=false; });
+
+const bpmInput = document.getElementById('bpmInput');
+document.getElementById('bpmDown').addEventListener('click', ()=>{ bpm=Math.max(40, bpm-1); bpmInput.value=bpm; });
+document.getElementById('bpmUp').addEventListener('click', ()=>{ bpm=Math.min(240, bpm+1); bpmInput.value=bpm; });
+bpmInput.addEventListener('change', e=>{ bpm = parseInt(e.target.value)||120; });
+
+/* ================= INIT ================= */
+CHANNEL_DEFS.forEach(def=> createStrip(def));
+</script>
+</body>
+</html>
